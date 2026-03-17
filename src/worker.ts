@@ -1,0 +1,424 @@
+import {
+  definePlugin,
+  runWorker,
+  type PluginContext,
+  type PluginEvent,
+  type PluginHealthDiagnostics,
+} from "@paperclipai/plugin-sdk";
+import {
+  sendMessage,
+  editMessage,
+  answerCallbackQuery,
+  setMyCommands,
+  escapeMarkdownV2,
+} from "./telegram-api.js";
+import {
+  formatIssueCreated,
+  formatIssueDone,
+  formatApprovalCreated,
+  formatAgentError,
+  formatAgentRunStarted,
+  formatAgentRunFinished,
+} from "./formatters.js";
+import { handleCommand, BOT_COMMANDS } from "./commands.js";
+import { METRIC_NAMES } from "./constants.js";
+
+type TelegramConfig = {
+  telegramBotTokenRef: string;
+  defaultChatId: string;
+  approvalsChatId: string;
+  errorsChatId: string;
+  notifyOnIssueCreated: boolean;
+  notifyOnIssueDone: boolean;
+  notifyOnApprovalCreated: boolean;
+  notifyOnAgentError: boolean;
+  enableCommands: boolean;
+  enableInbound: boolean;
+  dailyDigestEnabled: boolean;
+  dailyDigestTime: string;
+  topicRouting: boolean;
+};
+
+type TelegramUpdate = {
+  update_id: number;
+  message?: {
+    message_id: number;
+    from?: { id: number; username?: string; first_name?: string };
+    chat: { id: number; type: string; title?: string };
+    text?: string;
+    message_thread_id?: number;
+    reply_to_message?: {
+      message_id: number;
+      text?: string;
+      from?: { is_bot?: boolean };
+    };
+    entities?: Array<{ type: string; offset: number; length: number }>;
+  };
+  callback_query?: {
+    id: string;
+    from: { id: number; username?: string; first_name?: string };
+    message?: {
+      message_id: number;
+      chat: { id: number };
+      text?: string;
+    };
+    data?: string;
+  };
+};
+
+const TELEGRAM_API = "https://api.telegram.org";
+
+async function resolveChat(
+  ctx: PluginContext,
+  companyId: string,
+  fallback: string,
+): Promise<string | null> {
+  const override = await ctx.state.get({
+    scopeKind: "company",
+    scopeId: companyId,
+    stateKey: "telegram-chat",
+  });
+  return (override as string) ?? fallback ?? null;
+}
+
+const plugin = definePlugin({
+  async setup(ctx) {
+    const rawConfig = await ctx.config.get();
+    ctx.logger.info("Telegram plugin config loaded");
+    const config = rawConfig as unknown as TelegramConfig;
+
+    if (!config.telegramBotTokenRef) {
+      ctx.logger.warn("No telegramBotTokenRef configured, plugin disabled");
+      return;
+    }
+
+    const token = await ctx.secrets.resolve(config.telegramBotTokenRef);
+
+    // --- Register bot commands with Telegram ---
+    if (config.enableCommands) {
+      const registered = await setMyCommands(ctx, token, BOT_COMMANDS);
+      if (registered) {
+        ctx.logger.info("Bot commands registered with Telegram");
+      }
+    }
+
+    // --- Long polling for inbound messages ---
+    let pollingActive = true;
+    let lastUpdateId = 0;
+
+    async function pollUpdates(): Promise<void> {
+      while (pollingActive) {
+        try {
+          const res = await ctx.http.fetch(
+            `${TELEGRAM_API}/bot${token}/getUpdates?offset=${lastUpdateId + 1}&timeout=30&allowed_updates=["message","callback_query"]`,
+            { method: "GET" },
+          );
+          const data = (await res.json()) as {
+            ok: boolean;
+            result?: TelegramUpdate[];
+          };
+
+          if (data.ok && data.result) {
+            for (const update of data.result) {
+              lastUpdateId = Math.max(lastUpdateId, update.update_id);
+              await handleUpdate(ctx, token, config, update);
+            }
+          }
+        } catch (err) {
+          ctx.logger.error("Telegram polling error", { error: String(err) });
+          // Wait before retrying on error
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+      }
+    }
+
+    // Start polling in background
+    if (config.enableCommands || config.enableInbound) {
+      pollUpdates().catch((err) =>
+        ctx.logger.error("Polling loop crashed", { error: String(err) }),
+      );
+    }
+
+    // Stop polling on plugin shutdown
+    ctx.events.on("plugin.stopping", async () => {
+      pollingActive = false;
+    });
+
+    // --- Event subscriptions ---
+
+    const notify = async (
+      event: PluginEvent,
+      formatter: (e: PluginEvent) => { text: string; options: import("./telegram-api.js").SendMessageOptions },
+      overrideChatId?: string,
+    ) => {
+      const chatId = await resolveChat(
+        ctx,
+        event.companyId,
+        overrideChatId || config.defaultChatId,
+      );
+      if (!chatId) return;
+      const msg = formatter(event);
+      const messageId = await sendMessage(ctx, token, chatId, msg.text, msg.options);
+
+      if (messageId) {
+        // Store message-to-entity mapping for inbound reply routing
+        await ctx.state.set(
+          {
+            scopeKind: "plugin",
+            scopeId: "message-map",
+            stateKey: `msg_${chatId}_${messageId}`,
+          },
+          {
+            entityId: event.entityId,
+            entityType: event.entityType,
+            companyId: event.companyId,
+            eventType: event.eventType,
+          },
+        );
+
+        await ctx.activity.log({
+          companyId: event.companyId,
+          message: `Forwarded ${event.eventType} to Telegram`,
+          entityType: "plugin",
+          entityId: event.entityId,
+        });
+      }
+    };
+
+    if (config.notifyOnIssueCreated) {
+      ctx.events.on("issue.created", (event: PluginEvent) =>
+        notify(event, formatIssueCreated),
+      );
+    }
+
+    if (config.notifyOnIssueDone) {
+      ctx.events.on("issue.updated", async (event: PluginEvent) => {
+        const payload = event.payload as Record<string, unknown>;
+        if (payload.status !== "done") return;
+        await notify(event, formatIssueDone);
+      });
+    }
+
+    if (config.notifyOnApprovalCreated) {
+      ctx.events.on("approval.created", (event: PluginEvent) =>
+        notify(event, formatApprovalCreated, config.approvalsChatId),
+      );
+    }
+
+    if (config.notifyOnAgentError) {
+      ctx.events.on("agent.run.failed", (event: PluginEvent) =>
+        notify(event, formatAgentError, config.errorsChatId),
+      );
+    }
+
+    ctx.events.on("agent.run.started", (event: PluginEvent) =>
+      notify(event, formatAgentRunStarted),
+    );
+    ctx.events.on("agent.run.finished", (event: PluginEvent) =>
+      notify(event, formatAgentRunFinished),
+    );
+
+    // --- Per-company chat overrides ---
+
+    ctx.data.register("chat-mapping", async (params) => {
+      const companyId = String(params.companyId);
+      const saved = await ctx.state.get({
+        scopeKind: "company",
+        scopeId: companyId,
+        stateKey: "telegram-chat",
+      });
+      return { chatId: saved ?? config.defaultChatId };
+    });
+
+    ctx.actions.register("set-chat", async (params) => {
+      const companyId = String(params.companyId);
+      const chatId = String(params.chatId);
+      await ctx.state.set(
+        { scopeKind: "company", scopeId: companyId, stateKey: "telegram-chat" },
+        chatId,
+      );
+      ctx.logger.info("Updated Telegram chat mapping", { companyId, chatId });
+      return { ok: true };
+    });
+
+    // --- Daily digest job ---
+
+    if (config.dailyDigestEnabled) {
+      ctx.jobs.register("telegram-daily-digest", async () => {
+        // TODO: Aggregate agent activity stats when SDK supports entity queries
+        const text = [
+          escapeMarkdownV2("📊") + " *Daily Digest*",
+          "",
+          escapeMarkdownV2("Digest will show agent activity, issue completions, and costs once the Plugin SDK exposes entity read APIs."),
+        ].join("\n");
+
+        await sendMessage(ctx, token, config.defaultChatId, text, {
+          parseMode: "MarkdownV2",
+        });
+      });
+    }
+
+    ctx.logger.info("Telegram bot plugin started");
+  },
+
+  async onValidateConfig(config) {
+    if (!config.telegramBotTokenRef || typeof config.telegramBotTokenRef !== "string") {
+      return { ok: false, errors: ["telegramBotTokenRef is required"] };
+    }
+    if (!config.defaultChatId || typeof config.defaultChatId !== "string") {
+      return { ok: false, errors: ["defaultChatId is required"] };
+    }
+    return { ok: true };
+  },
+
+  async onHealth(): Promise<PluginHealthDiagnostics> {
+    return { status: "ok" };
+  },
+});
+
+async function handleUpdate(
+  ctx: PluginContext,
+  token: string,
+  config: TelegramConfig,
+  update: TelegramUpdate,
+): Promise<void> {
+  // Handle callback queries (button clicks)
+  if (update.callback_query) {
+    await handleCallbackQuery(ctx, token, update.callback_query);
+    return;
+  }
+
+  // Handle messages
+  if (!update.message?.text) return;
+
+  const msg = update.message;
+  const chatId = String(msg.chat.id);
+  const text = msg.text;
+  const threadId = msg.message_thread_id;
+
+  // Check for bot commands
+  const botCommand = msg.entities?.find((e) => e.type === "bot_command" && e.offset === 0);
+  if (botCommand && config.enableCommands) {
+    const fullCommand = text.slice(botCommand.offset, botCommand.offset + botCommand.length);
+    // Strip leading / and @botname suffix
+    const command = fullCommand.replace(/^\//, "").replace(/@.*$/, "");
+    const args = text.slice(botCommand.offset + botCommand.length).trim();
+    await handleCommand(ctx, token, chatId, command, args, threadId);
+    return;
+  }
+
+  // Inbound message routing: if replying to a bot notification, route to that issue
+  if (config.enableInbound && msg.reply_to_message?.from?.is_bot) {
+    const replyToId = msg.reply_to_message.message_id;
+    const mapping = await ctx.state.get({
+      scopeKind: "plugin",
+      scopeId: "message-map",
+      stateKey: `msg_${chatId}_${replyToId}`,
+    }) as { entityId: string; entityType: string; companyId: string } | null;
+
+    if (mapping && mapping.entityType === "issue") {
+      try {
+        await ctx.http.fetch(
+          `http://localhost:3100/api/issues/${mapping.entityId}/comments`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              body: text,
+              authorUserId: `telegram:${msg.from?.username ?? msg.from?.id ?? chatId}`,
+            }),
+          },
+        );
+        await ctx.metrics.write(METRIC_NAMES.inboundRouted, 1);
+        ctx.logger.info("Routed Telegram reply to issue comment", {
+          issueId: mapping.entityId,
+          from: msg.from?.username,
+        });
+      } catch (err) {
+        ctx.logger.error("Failed to route inbound message", { error: String(err) });
+      }
+    }
+  }
+}
+
+async function handleCallbackQuery(
+  ctx: PluginContext,
+  token: string,
+  query: NonNullable<TelegramUpdate["callback_query"]>,
+): Promise<void> {
+  const data = query.data;
+  if (!data) return;
+
+  const actor = query.from.username ?? query.from.first_name ?? String(query.from.id);
+  const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
+  const messageId = query.message?.message_id;
+
+  if (data.startsWith("approve_")) {
+    const approvalId = data.replace("approve_", "");
+    ctx.logger.info("Approval button clicked", { approvalId, actor });
+
+    try {
+      await ctx.http.fetch(
+        `http://localhost:3100/api/approvals/${approvalId}/approve`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decidedByUserId: `telegram:${actor}` }),
+        },
+      );
+
+      await answerCallbackQuery(ctx, token, query.id, "Approved");
+
+      // Update the original message to show resolution
+      if (chatId && messageId) {
+        await editMessage(
+          ctx,
+          token,
+          chatId,
+          messageId,
+          `${escapeMarkdownV2("✅")} *Approved* by ${escapeMarkdownV2(actor)}`,
+          { parseMode: "MarkdownV2" },
+        );
+      }
+    } catch (err) {
+      await answerCallbackQuery(ctx, token, query.id, `Failed: ${String(err)}`);
+    }
+    return;
+  }
+
+  if (data.startsWith("reject_")) {
+    const approvalId = data.replace("reject_", "");
+    ctx.logger.info("Rejection button clicked", { approvalId, actor });
+
+    try {
+      await ctx.http.fetch(
+        `http://localhost:3100/api/approvals/${approvalId}/reject`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decidedByUserId: `telegram:${actor}` }),
+        },
+      );
+
+      await answerCallbackQuery(ctx, token, query.id, "Rejected");
+
+      if (chatId && messageId) {
+        await editMessage(
+          ctx,
+          token,
+          chatId,
+          messageId,
+          `${escapeMarkdownV2("❌")} *Rejected* by ${escapeMarkdownV2(actor)}`,
+          { parseMode: "MarkdownV2" },
+        );
+      }
+    } catch (err) {
+      await answerCallbackQuery(ctx, token, query.id, `Failed: ${String(err)}`);
+    }
+    return;
+  }
+
+  await answerCallbackQuery(ctx, token, query.id, "Unknown action");
+}
+
+runWorker(plugin, import.meta.url);

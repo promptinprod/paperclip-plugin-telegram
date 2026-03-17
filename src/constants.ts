@@ -1,0 +1,25 @@
+export const PLUGIN_ID = "paperclip-plugin-telegram";
+export const PLUGIN_VERSION = "0.1.0";
+
+export const DEFAULT_CONFIG = {
+  telegramBotTokenRef: "",
+  defaultChatId: "",
+  approvalsChatId: "",
+  errorsChatId: "",
+  notifyOnIssueCreated: true,
+  notifyOnIssueDone: true,
+  notifyOnApprovalCreated: true,
+  notifyOnAgentError: true,
+  enableCommands: true,
+  enableInbound: true,
+  dailyDigestEnabled: false,
+  dailyDigestTime: "09:00",
+  topicRouting: false,
+} as const;
+
+export const METRIC_NAMES = {
+  sent: "telegram_notifications_sent",
+  failed: "telegram_notification_failures",
+  commandsHandled: "telegram_commands_handled",
+  inboundRouted: "telegram_inbound_routed",
+} as const;
