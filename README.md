@@ -16,6 +16,7 @@ Built on the Paperclip plugin SDK and the domain event bridge ([PR #909](https:/
 - **Forum topic routing**: map Telegram topics to Paperclip projects
 - **Daily digest**: scheduled summary of agent activity
 - **MarkdownV2 formatting** with automatic plain text fallback
+- **HITL escalation**: agents that get stuck can escalate to a dedicated channel with full conversation context, suggested replies, and approve/reject/override buttons. Configurable timeouts with automatic default actions.
 
 ## Setup
 
@@ -56,6 +57,10 @@ In your Paperclip instance settings, configure:
 | `enableInbound` | No | Route Telegram replies to issues (default: true) |
 | `dailyDigestEnabled` | No | Send daily activity summary |
 | `topicRouting` | No | Map forum topics to projects |
+| `escalationChatId` | No | Dedicated chat/topic for agent escalations |
+| `escalationTimeoutMs` | No | Timeout before default action fires (default: 900000 / 15 min) |
+| `escalationDefaultAction` | No | Action on timeout: `defer`, `close`, `retry`, `escalate_further` (default: `defer`) |
+| `escalationHoldMessage` | No | Message sent to customer while waiting (default: "Let me check on that - I'll get back to you shortly.") |
 
 ### 5. Add bot to group (optional)
 
@@ -113,6 +118,8 @@ MIT
 
 ## Credits
 
-This contribution was developed with AI assistance (Claude Code).
+[@MatB57](https://github.com/MatB57) - Escalation channel concept, "Chat OS" vision for turning chat plugins into bidirectional agent command centers, and the HITL suggested-reply flow.
+
+[@leeknowsai](https://github.com/leeknowsai) - Worker bootstrap patterns adapted from the Discord plugin.
 
 Inspired by [OpenClaw's Telegram integration](https://github.com/openclaw/openclaw) (grammY, bidirectional messaging, inline buttons) and adapted for the Paperclip plugin SDK.
