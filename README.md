@@ -8,15 +8,69 @@ Built on the Paperclip plugin SDK and the domain event bridge ([PR #909](https:/
 
 ## Features
 
+### Core
+
 - **Push notifications** on issue created, issue done, approval requested, agent error, run lifecycle
-- **Bot commands**: `/status`, `/issues`, `/agents`, `/approve`, `/help`, `/connect`
+- **Bot commands**: `/status`, `/issues`, `/agents`, `/approve`, `/help`, `/connect`, `/connect-topic`, `/acp`, `/commands`
 - **Inline buttons** for approve/reject on approval notifications
 - **Inbound routing**: reply to a notification in Telegram and it becomes an issue comment in Paperclip
 - **Per-company chat routing** with `/connect` command
 - **Forum topic routing**: map Telegram topics to Paperclip projects
 - **Daily digest**: scheduled summary of agent activity
 - **MarkdownV2 formatting** with automatic plain text fallback
-- **HITL escalation**: agents that get stuck can escalate to a dedicated channel with full conversation context, suggested replies, and approve/reject/override buttons. Configurable timeouts with automatic default actions.
+- **ACP bridge**: `/acp spawn`, `/acp status`, `/acp cancel`, `/acp close` for managing agent sessions
+
+### Phase 1: HITL Escalation
+
+- Agents call `escalate_to_human` tool when stuck (low confidence, user request, policy violation, unknown intent)
+- Escalation posted to dedicated channel with conversation context, suggested reply, and confidence score
+- Inline buttons: Send Suggested Reply, Reply, Override, Dismiss
+- Configurable timeout with default actions (`defer`, `auto_reply`, `close`)
+- Hold message sent to customer while waiting for human response
+- Reply routing back to originating chat via native or ACP transport
+
+### Phase 2: Multi-Agent Group Threads
+
+- Multiple agents per thread (up to 5 configurable via `MAX_AGENTS_PER_THREAD`)
+- `@mention` routing: address a specific agent by name in a multi-agent thread
+- Reply-to routing: reply to an agent's message to route to that agent
+- Fallback routing: most recently active agent receives unaddressed messages
+- **Handoff**: agents call `handoff_to_agent` tool to transfer work, with optional human approval gate
+- **Discuss**: agents call `discuss_with_agent` tool to start back-and-forth conversation loops
+- Conversation loops with configurable max turns and human checkpoint pauses
+- Stale loop detection (auto-pause when output repeats)
+- Output sequencing so multi-agent responses don't interleave
+- Native-first spawning: tries Paperclip agent sessions before falling back to ACP
+- Auto-spawn on handoff/discuss if target agent isn't already in the thread
+
+### Phase 3: Media-to-Task Pipeline
+
+- Voice messages, audio, video notes, documents, and photos routed to agents
+- Voice/audio transcription via Whisper API with transcription preview posted back
+- **Brief Agent**: media sent to intake channels is forwarded to a configurable Brief Agent for triage
+- Media in active agent threads is routed to the active session (native or ACP)
+
+### Phase 4: Custom Workflow Commands
+
+- `/commands import <json>` - import a multi-step workflow as a custom slash command
+- `/commands list` - show all registered custom commands
+- `/commands run <name> [args]` - execute a workflow
+- `/commands delete <name>` - remove a custom command
+- Custom commands invocable directly as `/<name>` (cannot override built-ins)
+- **Workflow step types**: `fetch_issue`, `invoke_agent`, `http_request`, `send_message`, `create_issue`, `wait_approval`, `set_state`
+- Template interpolation: `{{arg0}}`, `{{args}}`, `{{prev.result}}`, `{{step_id.result}}`
+- Per-company command registry
+
+### Phase 5: Proactive Agent Suggestions
+
+- Agents call `register_watch` tool to set up condition-based monitors
+- Watch conditions: `gt`, `lt`, `eq`, `ne`, `contains`, `exists` operators on entity fields
+- Watches evaluate against issues, agents, or custom state-stored data
+- Built-in templates: `invoice-overdue`, `lead-stale`
+- Custom templates with `{{field}}` placeholder interpolation
+- Rate limiting: configurable max suggestions per hour per company
+- Deduplication: same watch+entity won't re-fire within a configurable window (default 24h)
+- Scheduled job checks all watches periodically
 
 ## Setup
 
@@ -68,6 +122,11 @@ In your Paperclip instance settings, configure:
 | `escalationTimeoutMs` | No | Timeout before default action fires (default: 900000 / 15 min) |
 | `escalationDefaultAction` | No | Action on timeout: `defer`, `close`, `retry`, `escalate_further` (default: `defer`) |
 | `escalationHoldMessage` | No | Message sent to customer while waiting (default: "Let me check on that - I'll get back to you shortly.") |
+| `briefAgentId` | No | Agent ID for the Brief Agent (Phase 3 media intake) |
+| `briefAgentChatIds` | No | Chat IDs that act as media intake channels for the Brief Agent |
+| `transcriptionApiKeyRef` | No | Secret reference to OpenAI API key for Whisper transcription |
+| `maxSuggestionsPerHourPerCompany` | No | Rate limit for proactive suggestions (default: 10) |
+| `watchDeduplicationWindowMs` | No | Window before same watch+entity can re-fire (default: 86400000 / 24h) |
 
 ### 5. Add bot to group (optional)
 
@@ -104,11 +163,16 @@ When a user replies to a bot notification, the plugin looks up which Paperclip e
 |---------|---------|-------------|
 | Push notifications | Yes | Yes |
 | Receive messages | No | Yes |
-| Bot commands | No | /status, /issues, /agents, /approve |
-| Inline buttons | No | Approve/reject on approvals |
+| Bot commands | No | /status, /issues, /agents, /approve, /acp, /commands |
+| Inline buttons | No | Approve/reject on approvals + escalations + handoffs |
 | Reply routing | No | Replies become issue comments |
 | Topic routing | No | Forum topic = project |
 | Daily digest | No | Yes |
+| HITL escalation | No | Dedicated channel with suggested replies + timeout |
+| Multi-agent threads | No | Up to 5 agents per thread, @mention routing, handoff, discuss |
+| Media pipeline | No | Voice transcription, Brief Agent intake |
+| Custom commands | No | Importable multi-step workflows |
+| Proactive suggestions | No | Watch conditions with built-in sales templates |
 | Architecture | Monorepo example | Standalone npm package |
 
 ## Development
