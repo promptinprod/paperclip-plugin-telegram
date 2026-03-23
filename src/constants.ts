@@ -7,6 +7,7 @@ export const DEFAULT_CONFIG = {
   approvalsChatId: "",
   errorsChatId: "",
   paperclipBaseUrl: "http://localhost:3100",
+  paperclipPublicUrl: "",
   notifyOnIssueCreated: true,
   notifyOnIssueDone: true,
   notifyOnApprovalCreated: true,

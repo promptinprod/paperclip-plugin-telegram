@@ -45,6 +45,7 @@ type TelegramConfig = {
   approvalsChatId: string;
   errorsChatId: string;
   paperclipBaseUrl: string;
+  paperclipPublicUrl: string;
   notifyOnIssueCreated: boolean;
   notifyOnIssueDone: boolean;
   notifyOnApprovalCreated: boolean;
@@ -130,6 +131,7 @@ const plugin = definePlugin({
     ctx.logger.info("Telegram plugin config loaded");
     const config = rawConfig as unknown as TelegramConfig;
     const baseUrl = config.paperclipBaseUrl || "http://localhost:3100";
+    const publicUrl = config.paperclipPublicUrl || baseUrl;
 
     if (!config.telegramBotTokenRef) {
       ctx.logger.warn("No telegramBotTokenRef configured, plugin disabled");
@@ -203,7 +205,7 @@ const plugin = definePlugin({
         prefix = company?.issuePrefix ?? "";
         if (prefix) issuePrefixCache.set(companyId, prefix);
       }
-      return { baseUrl, issuePrefix: prefix || undefined };
+      return { baseUrl: publicUrl, issuePrefix: prefix || undefined };
     }
 
     const notify = async (

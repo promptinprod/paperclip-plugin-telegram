@@ -121,10 +121,17 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       paperclipBaseUrl: {
         type: "string",
-        title: "Paperclip Base URL",
+        title: "Paperclip API URL (internal)",
         description:
-          "Base URL of the Paperclip API server.",
+          "Internal URL of the Paperclip API server. Used for API calls (approvals, comments). Keep as localhost for same-server deployments.",
         default: DEFAULT_CONFIG.paperclipBaseUrl,
+      },
+      paperclipPublicUrl: {
+        type: "string",
+        title: "Paperclip Public URL",
+        description:
+          "Public URL for issue links in Telegram messages (e.g. https://pc.example.com). Falls back to API URL if empty.",
+        default: DEFAULT_CONFIG.paperclipPublicUrl,
       },
       escalationChatId: {
         type: "string",
