@@ -52,9 +52,10 @@ type TelegramConfig = {
   notifyOnAgentError: boolean;
   enableCommands: boolean;
   enableInbound: boolean;
-  digestMode: "off" | "daily" | "bidaily";
+  digestMode: "off" | "daily" | "bidaily" | "tridaily";
   dailyDigestTime: string;
   bidailySecondTime: string;
+  tridailyTimes: string;
   topicRouting: boolean;
   escalationChatId: string;
   escalationTimeoutMs: number;
@@ -373,18 +374,26 @@ const plugin = definePlugin({
         // Check if current UTC hour matches a configured digest time
         const nowHour = new Date().getUTCHours();
         const nowMin = new Date().getUTCMinutes();
+        if (nowMin >= 5) return; // only fire within first 5 min of the hour
+
         const parseHour = (t: string) => {
           const [h] = (t || "").split(":");
           return parseInt(h ?? "", 10);
         };
         const firstHour = parseHour(config.dailyDigestTime);
         const secondHour = parseHour(config.bidailySecondTime);
+        const tridailyHours = (config.tridailyTimes || "07:00,13:00,19:00")
+          .split(",")
+          .map((t) => parseHour(t.trim()));
 
-        const shouldSend =
-          (nowMin < 5) && ( // only fire within first 5 min of the hour
-            (nowHour === firstHour) ||
-            (effectiveDigestMode === "bidaily" && nowHour === secondHour)
-          );
+        let shouldSend = false;
+        if (effectiveDigestMode === "daily") {
+          shouldSend = nowHour === firstHour;
+        } else if (effectiveDigestMode === "bidaily") {
+          shouldSend = nowHour === firstHour || nowHour === secondHour;
+        } else if (effectiveDigestMode === "tridaily") {
+          shouldSend = tridailyHours.includes(nowHour);
+        }
         if (!shouldSend) return;
 
         const companies = await ctx.companies.list();

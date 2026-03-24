@@ -103,8 +103,8 @@ const manifest: PaperclipPluginManifestV1 = {
       digestMode: {
         type: "string",
         title: "Digest mode",
-        description: "off = disabled, daily = once per day, bidaily = twice per day.",
-        enum: ["off", "daily", "bidaily"],
+        description: "off = disabled, daily = once per day, bidaily = twice per day, tridaily = three times per day.",
+        enum: ["off", "daily", "bidaily", "tridaily"],
         default: DEFAULT_CONFIG.digestMode,
       },
       dailyDigestTime: {
@@ -118,6 +118,12 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Bidaily second time (HH:MM UTC)",
         description: "Second digest time for bidaily mode.",
         default: DEFAULT_CONFIG.bidailySecondTime,
+      },
+      tridailyTimes: {
+        type: "string",
+        title: "Tridaily times (HH:MM,HH:MM,HH:MM UTC)",
+        description: "Three comma-separated times for tridaily mode.",
+        default: DEFAULT_CONFIG.tridailyTimes,
       },
       topicRouting: {
         type: "boolean",
