@@ -37,14 +37,31 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema: {
     type: "object",
     properties: {
+      // --- Connection ---
       telegramBotTokenRef: {
         type: "string",
         format: "secret-ref",
         title: "Telegram Bot Token (secret reference)",
         description:
-          "Secret UUID for your Telegram Bot token. Create the secret in Settings → Secrets, then paste its UUID here. Get a token from @BotFather.",
+          "Secret UUID for your Telegram Bot token. Create the secret in Settings > Secrets, then paste its UUID here. Get a token from @BotFather.",
         default: DEFAULT_CONFIG.telegramBotTokenRef,
       },
+      paperclipBaseUrl: {
+        type: "string",
+        title: "Paperclip API URL (internal)",
+        description:
+          "Internal URL of the Paperclip API server. Used for API calls (approvals, comments). Keep as localhost for same-server deployments.",
+        default: DEFAULT_CONFIG.paperclipBaseUrl,
+      },
+      paperclipPublicUrl: {
+        type: "string",
+        title: "Paperclip Public URL",
+        description:
+          "Public URL for issue links in Telegram messages (e.g. https://pc.example.com). Falls back to API URL if empty.",
+        default: DEFAULT_CONFIG.paperclipPublicUrl,
+      },
+
+      // --- Chat routing ---
       defaultChatId: {
         type: "string",
         title: "Default Chat ID (fallback)",
@@ -66,6 +83,22 @@ const manifest: PaperclipPluginManifestV1 = {
           "Chat ID for agent error notifications. Falls back to default chat.",
         default: DEFAULT_CONFIG.errorsChatId,
       },
+      escalationChatId: {
+        type: "string",
+        title: "Escalation Chat ID",
+        description:
+          "Telegram chat ID where escalations are sent for human review. If empty, escalations are logged but not forwarded.",
+        default: DEFAULT_CONFIG.escalationChatId,
+      },
+      topicRouting: {
+        type: "boolean",
+        title: "Forum topic routing",
+        description:
+          "Map Telegram forum topics to Paperclip projects. Requires the bot to be in a group with forum topics enabled.",
+        default: DEFAULT_CONFIG.topicRouting,
+      },
+
+      // --- Notifications ---
       notifyOnIssueCreated: {
         type: "boolean",
         title: "Notify on issue created",
@@ -86,20 +119,8 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Notify on agent error",
         default: DEFAULT_CONFIG.notifyOnAgentError,
       },
-      enableCommands: {
-        type: "boolean",
-        title: "Enable bot commands",
-        description:
-          "Allow users to interact with Paperclip via Telegram bot commands (/status, /issues, /agents).",
-        default: DEFAULT_CONFIG.enableCommands,
-      },
-      enableInbound: {
-        type: "boolean",
-        title: "Enable inbound message routing",
-        description:
-          "Route Telegram messages to Paperclip issue comments. Messages sent in reply to a notification get attached to that issue.",
-        default: DEFAULT_CONFIG.enableInbound,
-      },
+
+      // --- Digest ---
       digestMode: {
         type: "string",
         title: "Digest mode",
@@ -125,34 +146,24 @@ const manifest: PaperclipPluginManifestV1 = {
         description: "Three comma-separated times for tridaily mode.",
         default: DEFAULT_CONFIG.tridailyTimes,
       },
-      topicRouting: {
+
+      // --- Bot interaction ---
+      enableCommands: {
         type: "boolean",
-        title: "Forum topic routing",
+        title: "Enable bot commands",
         description:
-          "Map Telegram forum topics to Paperclip projects. Requires the bot to be in a group with forum topics enabled.",
-        default: DEFAULT_CONFIG.topicRouting,
+          "Allow users to interact with Paperclip via Telegram bot commands (/status, /issues, /agents).",
+        default: DEFAULT_CONFIG.enableCommands,
       },
-      paperclipBaseUrl: {
-        type: "string",
-        title: "Paperclip API URL (internal)",
+      enableInbound: {
+        type: "boolean",
+        title: "Enable inbound message routing",
         description:
-          "Internal URL of the Paperclip API server. Used for API calls (approvals, comments). Keep as localhost for same-server deployments.",
-        default: DEFAULT_CONFIG.paperclipBaseUrl,
+          "Route Telegram messages to Paperclip issue comments. Messages sent in reply to a notification get attached to that issue.",
+        default: DEFAULT_CONFIG.enableInbound,
       },
-      paperclipPublicUrl: {
-        type: "string",
-        title: "Paperclip Public URL",
-        description:
-          "Public URL for issue links in Telegram messages (e.g. https://pc.example.com). Falls back to API URL if empty.",
-        default: DEFAULT_CONFIG.paperclipPublicUrl,
-      },
-      escalationChatId: {
-        type: "string",
-        title: "Escalation Chat ID",
-        description:
-          "Telegram chat ID where escalations are sent for human review. If empty, escalations are logged but not forwarded.",
-        default: DEFAULT_CONFIG.escalationChatId,
-      },
+
+      // --- Escalation ---
       escalationTimeoutMs: {
         type: "number",
         title: "Escalation Timeout (ms)",
@@ -175,6 +186,8 @@ const manifest: PaperclipPluginManifestV1 = {
           "Message sent to the user when their conversation is escalated to a human.",
         default: DEFAULT_CONFIG.escalationHoldMessage,
       },
+
+      // --- Agent sessions ---
       maxAgentsPerThread: {
         type: "number",
         title: "Max Agents Per Thread",
@@ -182,6 +195,8 @@ const manifest: PaperclipPluginManifestV1 = {
           "Maximum number of concurrent agent sessions allowed in a single thread.",
         default: MAX_AGENTS_PER_THREAD,
       },
+
+      // --- Media pipeline ---
       briefAgentId: {
         type: "string",
         title: "Brief Agent ID",
@@ -199,9 +214,11 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "string",
         format: "secret-ref",
         title: "Transcription API Key (secret reference)",
-        description: "Secret UUID for your OpenAI API key used for Whisper transcription. Create the secret in Settings → Secrets, then paste its UUID here.",
+        description: "Secret UUID for your OpenAI API key used for Whisper transcription. Create the secret in Settings > Secrets, then paste its UUID here.",
         default: DEFAULT_CONFIG.transcriptionApiKeyRef,
       },
+
+      // --- Proactive watches ---
       maxSuggestionsPerHourPerCompany: {
         type: "number",
         title: "Max Suggestions per Hour per Company",
