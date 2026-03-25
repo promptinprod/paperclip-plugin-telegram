@@ -311,9 +311,16 @@ async function handleConnect(
       return;
     }
 
+    // Inbound: chat → company (for commands like /status)
     await ctx.state.set(
       { scopeKind: "instance", stateKey: `chat_${chatId}` },
       { companyId: match.id, companyName: match.name ?? input, linkedAt: new Date().toISOString() },
+    );
+
+    // Outbound: company → chat (for notifications)
+    await ctx.state.set(
+      { scopeKind: "company", scopeId: match.id, stateKey: "telegram-chat" },
+      chatId,
     );
 
     await sendMessage(
