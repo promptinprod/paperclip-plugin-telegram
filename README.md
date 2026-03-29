@@ -1,27 +1,66 @@
 # paperclip-plugin-telegram
 
 [![npm](https://img.shields.io/npm/v/paperclip-plugin-telegram)](https://www.npmjs.com/package/paperclip-plugin-telegram)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Bidirectional Telegram integration for [Paperclip](https://github.com/paperclipai/paperclip). Push agent notifications to Telegram, receive bot commands, approve requests with inline buttons, and route forum topics to projects.
+Bidirectional Telegram integration for [Paperclip](https://github.com/paperclipai/paperclip). Push agent notifications to Telegram, receive bot commands, approve requests with inline buttons, gather community signals, run multi-agent sessions in threads, process media attachments, register custom commands, and deploy proactive agent suggestions.
 
 Built on the Paperclip plugin SDK and the domain event bridge ([PR #909](https://github.com/paperclipai/paperclip/pull/909)).
 
-## Features
+## Why this exists
 
-### Core
+Multiple Paperclip users asked for notifications on the same day the plugin system shipped (2026-03-14):
 
-- **Push notifications** on issue created, issue done, approval requested, agent error, run lifecycle
-- **Bot commands**: `/status`, `/issues`, `/agents`, `/approve`, `/help`, `/connect`, `/connect-topic`, `/acp`, `/commands`
-- **Inline buttons** for approve/reject on approval notifications
-- **Inbound routing**: reply to a notification in Telegram and it becomes an issue comment in Paperclip
-- **Per-company chat routing** with `/connect` command
-- **Forum topic routing**: map Telegram topics to Paperclip projects
-- **Daily digest**: scheduled summary of agent activity
-- **MarkdownV2 formatting** with automatic plain text fallback
-- **ACP bridge**: `/acp spawn`, `/acp status`, `/acp cancel`, `/acp close` for managing agent sessions
+> "is there a way to have codex/claude check paperclip to see when tasks are done without me prompting it?" - @Choose Liberty, Discord #dev
+
+> "basically to have it 'let me know when its done'" - @Choose Liberty, Discord #dev
+
+> "can claude code check paperclip to see when tasks are done" - @Nascozz, Discord #dev
+
+@dotta (maintainer) responded: "we're also adding issue-changed hooks for plugins so when that lands someone could [make notifications]." The event bridge ([PR #909](https://github.com/paperclipai/paperclip/pull/909)) shipped that same day. @Ryze said "Really excited by the plugins. I had developed a custom plugin bridge that I will now deprecate and migrate over to the new supported plugin system."
+
+This is that plugin.
+
+## What it does
+
+### Notifications (MarkdownV2 with plain text fallback)
+
+- **Issue created** - Title, description, status, priority, assignee, project fields, and a "View Issue" link
+- **Issue done** - Completion confirmation with status fields
+- **Approval requested** - Interactive **Approve** and **Reject** inline buttons. Click to act without leaving Telegram.
+- **Agent error** - Error message with warning indicator
+- **Agent run started/finished** - Lifecycle notifications
+
+### Interactive approvals
+- Approve/reject inline buttons on every approval notification
+- Clicking a button calls the Paperclip API and updates the Telegram message inline
+- Callback query acknowledgment with result text
+
+### Per-type chat routing
+- `approvalsChatId` - Dedicated chat for approval notifications
+- `errorsChatId` - Dedicated chat for agent errors
+- `escalationChatId` - Dedicated chat for agent escalations
+- Falls back to `defaultChatId` when per-type chats aren't configured
+- Per-company overrides via `/connect`
+
+### Bot commands
+- `/status` - Show active agents and recent completions
+- `/issues` - List open issues
+- `/agents` - List agents with status indicators
+- `/approve <id>` - Approve a pending approval
+- `/help` - Display all available commands
+- `/connect <company>` - Link this chat to a Paperclip company
+- `/connect-topic <project>` - Map a forum topic to a Paperclip project
+- `/acp spawn <agent>` - Start a new agent session in the current thread
+- `/acp status` - Check ACP session status
+- `/acp cancel` - Cancel a running ACP session
+- `/acp close` - Close a completed ACP session
+- `/commands import <json>` - Import a workflow command
+- `/commands list` - List registered workflow commands
+- `/commands run <name> [args]` - Execute a workflow command
+- `/commands delete <name>` - Delete a workflow command
 
 ### Phase 1: HITL Escalation
-
 - Agents call `escalate_to_human` tool when stuck (low confidence, user request, policy violation, unknown intent)
 - Escalation posted to dedicated channel with conversation context, suggested reply, and confidence score
 - Inline buttons: Send Suggested Reply, Reply, Override, Dismiss
@@ -30,8 +69,7 @@ Built on the Paperclip plugin SDK and the domain event bridge ([PR #909](https:/
 - Reply routing back to originating chat via native or ACP transport
 
 ### Phase 2: Multi-Agent Group Threads
-
-- Multiple agents per thread (up to 5 configurable via `MAX_AGENTS_PER_THREAD`)
+- Multiple agents per thread (up to 5 configurable via `maxAgentsPerThread`)
 - `@mention` routing: address a specific agent by name in a multi-agent thread
 - Reply-to routing: reply to an agent's message to route to that agent
 - Fallback routing: most recently active agent receives unaddressed messages
@@ -44,14 +82,12 @@ Built on the Paperclip plugin SDK and the domain event bridge ([PR #909](https:/
 - Auto-spawn on handoff/discuss if target agent isn't already in the thread
 
 ### Phase 3: Media-to-Task Pipeline
-
 - Voice messages, audio, video notes, documents, and photos routed to agents
 - Voice/audio transcription via Whisper API with transcription preview posted back
 - **Brief Agent**: media sent to intake channels is forwarded to a configurable Brief Agent for triage
 - Media in active agent threads is routed to the active session (native or ACP)
 
 ### Phase 4: Custom Workflow Commands
-
 - `/commands import <json>` - import a multi-step workflow as a custom slash command
 - `/commands list` - show all registered custom commands
 - `/commands run <name> [args]` - execute a workflow
@@ -62,7 +98,6 @@ Built on the Paperclip plugin SDK and the domain event bridge ([PR #909](https:/
 - Per-company command registry
 
 ### Phase 5: Proactive Agent Suggestions
-
 - Agents call `register_watch` tool to set up condition-based monitors
 - Watch conditions: `gt`, `lt`, `eq`, `ne`, `contains`, `exists` operators on entity fields
 - Watches evaluate against issues, agents, or custom state-stored data
@@ -72,25 +107,24 @@ Built on the Paperclip plugin SDK and the domain event bridge ([PR #909](https:/
 - Deduplication: same watch+entity won't re-fire within a configurable window (default 24h)
 - Scheduled job checks all watches periodically
 
-## Setup
+### Reply routing
+- Reply to any bot notification to route your message back to Paperclip
+- Replies to issue notifications create issue comments automatically
+- Replies to escalation notifications resolve the escalation as a human reply
+- Enable/disable with `enableInbound` config toggle (default: true)
 
-### 1. Create a Telegram bot
+### Daily digest
+- Configurable digest summaries posted to your Telegram chats
+- Modes: `daily` (once), `bidaily` (twice), `tridaily` (three times per day)
+- Configure via the `digestMode` config setting
+- Includes: tasks completed/created, active agents, in-progress/review/blocked issues
 
-1. Open Telegram and chat with [@BotFather](https://t.me/BotFather)
-2. Run `/newbot` and follow the prompts
-3. Save the bot token
+### Forum topic routing
+- Map Telegram forum topics to Paperclip projects via `/connect-topic`
+- Notifications for a project are routed to its mapped topic
+- Requires a group with forum topics enabled
 
-### 2. Get your chat ID
-
-Send a message to your bot, then run:
-
-```bash
-curl "https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates"
-```
-
-Find the `chat.id` field in the response. For groups, the ID is a negative number.
-
-### 3. Install the plugin
+## Install
 
 ```bash
 npm install paperclip-plugin-telegram
@@ -104,69 +138,51 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
   -d '{"packageName":"paperclip-plugin-telegram"}'
 ```
 
-### 4. Store your bot token as a Paperclip secret
+## Setup
 
-The bot token field requires a Paperclip secret reference (a UUID), not the raw token.
+1. Open Telegram and chat with [@BotFather](https://t.me/BotFather)
+2. Run `/newbot` and follow the prompts to create a bot
+3. Save the bot token
+4. Send a message to your bot, then run `curl "https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates"` and find the `chat.id` field
+5. In Paperclip, go to **Settings -> Secrets -> Create new secret**, paste your bot token as the secret value, and copy the resulting UUID
+6. Configure the plugin with the secret UUID in `telegramBotTokenRef` and your chat ID in `defaultChatId`
 
-1. In Paperclip, go to **Settings → Secrets → Create new secret**
-2. Paste your Telegram bot token as the secret value and save
-3. Copy the UUID of the created secret
-4. Use that UUID in the `telegramBotTokenRef` field below
-
-Do the same for `transcriptionApiKeyRef` if you want Whisper transcription.
-
-### 5. Configure
-
-In your Paperclip instance settings, configure:
+## Configuration
 
 | Setting | Required | Description |
 |---------|----------|-------------|
-| `telegramBotTokenRef` | Yes | Secret UUID for your bot token (see step 4) |
-| `defaultChatId` | Yes | Chat ID for notifications |
+| `telegramBotTokenRef` | Yes | Secret UUID for your bot token |
+| `defaultChatId` | No | Fallback chat ID for notifications |
 | `approvalsChatId` | No | Separate chat for approvals |
 | `errorsChatId` | No | Separate chat for errors |
+| `escalationChatId` | No | Dedicated chat for agent escalations |
+| `paperclipBaseUrl` | No | Internal Paperclip API URL (default: http://localhost:3100) |
+| `paperclipPublicUrl` | No | Public URL for issue links in messages |
 | `enableCommands` | No | Enable bot commands (default: true) |
 | `enableInbound` | No | Route Telegram replies to issues (default: true) |
-| `dailyDigestEnabled` | No | Send daily activity summary |
-| `topicRouting` | No | Map forum topics to projects |
-| `escalationChatId` | No | Dedicated chat/topic for agent escalations |
+| `topicRouting` | No | Map forum topics to projects (default: false) |
+| `digestMode` | No | Digest frequency: off, daily, bidaily, tridaily (default: off) |
+| `dailyDigestTime` | No | UTC time for digest, HH:MM (default: 09:00) |
+| `bidailySecondTime` | No | Second digest time for bidaily mode (default: 17:00) |
+| `tridailyTimes` | No | Comma-separated HH:MM times for tridaily (default: 07:00,13:00,19:00) |
 | `escalationTimeoutMs` | No | Timeout before default action fires (default: 900000 / 15 min) |
-| `escalationDefaultAction` | No | Action on timeout: `defer`, `close`, `retry`, `escalate_further` (default: `defer`) |
-| `escalationHoldMessage` | No | Message sent to customer while waiting (default: "Let me check on that - I'll get back to you shortly.") |
-| `briefAgentId` | No | Agent ID for the Brief Agent (Phase 3 media intake) |
-| `briefAgentChatIds` | No | Chat IDs that act as media intake channels for the Brief Agent |
-| `transcriptionApiKeyRef` | No | Secret reference to OpenAI API key for Whisper transcription |
+| `escalationDefaultAction` | No | Action on timeout: `defer`, `auto_reply`, `close` (default: `defer`) |
+| `escalationHoldMessage` | No | Message sent to customer while waiting |
+| `maxAgentsPerThread` | No | Max concurrent agents per thread (default: 5) |
+| `briefAgentId` | No | Agent ID for media intake Brief Agent |
+| `briefAgentChatIds` | No | Chat IDs that act as media intake channels |
+| `transcriptionApiKeyRef` | No | Secret reference to OpenAI API key for Whisper |
 | `maxSuggestionsPerHourPerCompany` | No | Rate limit for proactive suggestions (default: 10) |
-| `watchDeduplicationWindowMs` | No | Window before same watch+entity can re-fire (default: 86400000 / 24h) |
+| `watchDeduplicationWindowMs` | No | Suppress duplicate watch suggestions within this window (default: 86400000 / 24h) |
 
-### 6. Add bot to group (optional)
+## Agent tools
 
-If using a group chat:
-1. Add the bot to your Telegram group
-2. Disable privacy mode via BotFather (`/setprivacy` -> Disable) if you want the bot to see all messages
-3. Run `/connect <company-name>` in the group
-
-## How it works
-
-### Notifications (outbound)
-
-When Paperclip events fire (issue created, approval needed, agent error), the plugin formats them as Telegram messages with MarkdownV2 and sends to the configured chat.
-
-Approval notifications include inline Approve/Reject buttons. Clicking a button calls the Paperclip API directly and updates the message to show the resolution.
-
-### Commands (inbound)
-
-The bot registers commands with Telegram's command menu. Users can interact with Paperclip directly:
-
-- `/status` - overview of agents and tasks
-- `/issues` - list open issues
-- `/agents` - list agents with status
-- `/approve <id>` - approve a pending request
-- `/connect <company>` - link this chat to a Paperclip company
-
-### Reply routing
-
-When a user replies to a bot notification, the plugin looks up which Paperclip entity that notification was about and posts the reply as an issue comment. This turns Telegram threads into a natural conversation interface for Paperclip issues.
+| Tool | Phase | Description |
+|------|-------|-------------|
+| `escalate_to_human` | 1 | Escalate a conversation to a human when confidence is low |
+| `handoff_to_agent` | 2 | Hand off work to another agent in this thread |
+| `discuss_with_agent` | 2 | Start a back-and-forth conversation with another agent |
+| `register_watch` | 5 | Register a proactive watch that monitors entities and sends suggestions |
 
 ## Comparison with PR #407
 
@@ -192,7 +208,7 @@ When a user replies to a bot notification, the plugin looks up which Paperclip e
 
 The `telegramBotTokenRef` and `transcriptionApiKeyRef` fields now require a Paperclip secret reference (a UUID), not the raw token value. If you previously entered your raw bot token in the field, follow these steps to migrate:
 
-1. Go to **Settings → Secrets → Create new secret**
+1. Go to **Settings -> Secrets -> Create new secret**
 2. Paste your Telegram bot token as the secret value and save
 3. Copy the resulting UUID
 4. Open **Plugin Settings for Telegram Bot** and paste the UUID into "Telegram Bot Token"
@@ -204,13 +220,18 @@ The plugin will fail to activate if a raw token (non-UUID) is entered in the fie
 
 ```bash
 pnpm install
-pnpm build
 pnpm typecheck
+pnpm test
+pnpm build
 ```
 
-## License
+~80 tests covering notifications, approvals, escalation, session registry, media pipeline, custom commands, proactive suggestions, MarkdownV2 formatting, and bot commands.
 
-MIT
+## Contributing
+
+Issues and PRs welcome at [github.com/mvanhorn/paperclip-plugin-telegram](https://github.com/mvanhorn/paperclip-plugin-telegram).
+
+Auto-publishes to npm on push to `main` via OIDC trusted publishing.
 
 ## Credits
 
@@ -219,3 +240,7 @@ MIT
 [@leeknowsai](https://github.com/leeknowsai) - Worker bootstrap patterns adapted from the Discord plugin.
 
 Inspired by [OpenClaw's Telegram integration](https://github.com/openclaw/openclaw) (grammY, bidirectional messaging, inline buttons) and adapted for the Paperclip plugin SDK.
+
+## License
+
+MIT
