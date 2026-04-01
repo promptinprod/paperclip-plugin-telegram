@@ -757,6 +757,8 @@ async function flushOutputQueue(
 
 // --- Send labeled output ---
 
+const TELEGRAM_MAX_LENGTH = 4000; // Leave room for prefix/label overhead
+
 async function sendLabeledOutput(
   ctx: PluginContext,
   token: string,
@@ -772,18 +774,42 @@ async function sendLabeledOutput(
     : escapeMarkdownV2("\ud83e\udd16");
 
   const label = `*\\[${escapeMarkdownV2(displayName)}\\]*`;
-  const formatted = `${prefix} ${label} ${escapeMarkdownV2(text)}`;
 
-  const messageId = await sendMessage(ctx, token, chatId, formatted, {
-    parseMode: "MarkdownV2",
-    messageThreadId: threadId,
-  });
+  // Split long text into chunks to stay within Telegram's 4096 char limit
+  const chunks: string[] = [];
+  if (text.length <= TELEGRAM_MAX_LENGTH) {
+    chunks.push(text);
+  } else {
+    let remaining = text;
+    while (remaining.length > 0) {
+      if (remaining.length <= TELEGRAM_MAX_LENGTH) {
+        chunks.push(remaining);
+        break;
+      }
+      // Try to split at a newline boundary
+      let splitAt = remaining.lastIndexOf("\n", TELEGRAM_MAX_LENGTH);
+      if (splitAt <= 0) splitAt = TELEGRAM_MAX_LENGTH;
+      chunks.push(remaining.slice(0, splitAt));
+      remaining = remaining.slice(splitAt).replace(/^\n/, "");
+    }
+  }
 
-  if (messageId) {
-    await ctx.state.set(
-      { scopeKind: "instance", stateKey: `agent_msg_${chatId}_${messageId}` },
-      { sessionId },
-    );
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    const chunkPrefix = i === 0 ? `${prefix} ${label} ` : `${prefix} ${label} `;
+    const formatted = `${chunkPrefix}${escapeMarkdownV2(chunks[i]!)}`;
+
+    const messageId = await sendMessage(ctx, token, chatId, formatted, {
+      parseMode: "MarkdownV2",
+      messageThreadId: threadId,
+    });
+
+    if (messageId && isLast) {
+      await ctx.state.set(
+        { scopeKind: "instance", stateKey: `agent_msg_${chatId}_${messageId}` },
+        { sessionId },
+      );
+    }
   }
 }
 
