@@ -122,6 +122,32 @@ export async function handleAcpCommand(
   }
 }
 
+// --- Agent name resolution ---
+
+/**
+ * Resolve an agent by name/urlKey (case-insensitive).
+ * The plugin SDK's `agents.get()` requires a UUID, so we list all agents
+ * and match by name or urlKey.
+ */
+async function resolveAgentByName(
+  ctx: PluginContext,
+  name: string,
+  companyId: string,
+): Promise<{ id: string; name: string } | null> {
+  try {
+    const allAgents = await ctx.agents.list({ companyId });
+    const lower = name.toLowerCase();
+    const match = (allAgents as any[]).find(
+      (a: any) =>
+        a.name?.toLowerCase() === lower ||
+        a.urlKey?.toLowerCase() === lower,
+    );
+    return match ? { id: match.id, name: match.name } : null;
+  } catch {
+    return null;
+  }
+}
+
 // --- Spawn (multi-agent aware, native-first) ---
 
 async function handleAcpSpawn(
@@ -171,27 +197,25 @@ async function handleAcpSpawn(
   const displayName = trimmedName.charAt(0).toUpperCase() + trimmedName.slice(1);
   const resolvedCompanyId = companyId ?? await resolveCompanyIdFromChat(ctx, chatId);
 
-  // Try native session first: check if agent exists in Paperclip
+  // Try native session first: resolve agent by name, then create session
   let transport: "native" | "acp" = "acp";
   let sessionId: string;
   let agentId = "";
 
-  try {
-    const agent = await ctx.agents.get(trimmedName, resolvedCompanyId);
-    if (agent) {
-      // Native Paperclip agent - create a session
-      agentId = agent.id;
+  const resolved = await resolveAgentByName(ctx, trimmedName, resolvedCompanyId);
+  if (resolved) {
+    try {
+      agentId = resolved.id;
       const session = await ctx.agents.sessions.create(agentId, resolvedCompanyId, {
         reason: `Telegram thread ${chatId}/${messageThreadId}`,
       });
       sessionId = session.sessionId;
       transport = "native";
       ctx.logger.info("Created native agent session", { agentId, sessionId });
-    } else {
+    } catch {
       sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
-  } catch {
-    // Agent not found in Paperclip - fall back to ACP
+  } else {
     sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
@@ -892,19 +916,19 @@ async function executeHandoff(
     let sessionId: string;
     let agentId = "";
 
-    try {
-      const agent = await ctx.agents.get(targetAgent, companyId);
-      if (agent) {
-        agentId = agent.id;
+    const resolved = await resolveAgentByName(ctx, targetAgent, companyId);
+    if (resolved) {
+      try {
+        agentId = resolved.id;
         const session = await ctx.agents.sessions.create(agentId, companyId, {
           reason: `Handoff from Telegram thread ${chatId}/${threadId}`,
         });
         sessionId = session.sessionId;
         transport = "native";
-      } else {
+      } catch {
         sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       }
-    } catch {
+    } else {
       sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
 
@@ -1001,19 +1025,19 @@ export async function handleDiscussToolCall(
     let sessionId: string;
     let agentId = "";
 
-    try {
-      const agent = await ctx.agents.get(targetAgent, companyId);
-      if (agent) {
-        agentId = agent.id;
+    const resolved = await resolveAgentByName(ctx, targetAgent, companyId);
+    if (resolved) {
+      try {
+        agentId = resolved.id;
         const session = await ctx.agents.sessions.create(agentId, companyId, {
           reason: `Discussion from Telegram thread ${chatId}/${threadId}`,
         });
         sessionId = session.sessionId;
         transport = "native";
-      } else {
+      } catch {
         sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       }
-    } catch {
+    } else {
       sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
 
