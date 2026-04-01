@@ -537,51 +537,54 @@ export async function routeMessageToAgent(
       await ctx.agents.sessions.sendMessage(targetSession.sessionId, resolvedCompanyId, {
         prompt: text,
         reason: "telegram_message",
-        onEvent: (event: AgentSessionEvent) => {
-          if (event.eventType === "chunk" && event.message) {
-            // Filter out raw JSON events (system init, thinking, tool calls, etc.)
-            // Only forward human-readable assistant text to Telegram
-            const msg = event.message;
-            if (msg.startsWith("{")) {
-              try {
-                const parsed = JSON.parse(msg);
-                // Only forward assistant text content
-                if (parsed.type === "assistant" && parsed.message?.content) {
-                  const textParts = (parsed.message.content as any[])
-                    .filter((c: any) => c.type === "text" && c.text)
-                    .map((c: any) => c.text);
-                  if (textParts.length > 0) {
-                    handleAcpOutput(ctx, token, {
-                      sessionId: targetSession!.sessionId,
-                      chatId,
-                      threadId,
-                      text: textParts.join("\n"),
-                      done: false,
-                    }).catch((err) => ctx.logger.error("Native output handler error", { error: String(err) }));
+        onEvent: (() => {
+          // Buffer assistant text and send only the final response
+          const assistantTextBuffer: string[] = [];
+
+          return (event: AgentSessionEvent) => {
+            if (event.eventType === "chunk" && event.message) {
+              const msg = event.message;
+              if (msg.startsWith("{")) {
+                try {
+                  const parsed = JSON.parse(msg);
+                  // Collect only assistant text content
+                  if (parsed.type === "assistant" && parsed.message?.content) {
+                    const textParts = (parsed.message.content as any[])
+                      .filter((c: any) => c.type === "text" && c.text)
+                      .map((c: any) => c.text);
+                    if (textParts.length > 0) {
+                      assistantTextBuffer.push(textParts.join("\n"));
+                    }
                   }
+                } catch {
+                  // Not JSON — ignore non-structured output
                 }
-                return;
-              } catch {
-                // Not JSON — fall through and send as plain text
+              }
+              // Drop all non-JSON chunks (system messages like "run started", "adapter invocation", etc.)
+            } else if (event.eventType === "done") {
+              const finalText = assistantTextBuffer.length > 0
+                ? assistantTextBuffer.join("\n\n")
+                : "";
+              if (finalText) {
+                handleAcpOutput(ctx, token, {
+                  sessionId: targetSession!.sessionId,
+                  chatId,
+                  threadId,
+                  text: finalText,
+                  done: true,
+                }).catch((err) => ctx.logger.error("Native output handler error", { error: String(err) }));
+              } else {
+                handleAcpOutput(ctx, token, {
+                  sessionId: targetSession!.sessionId,
+                  chatId,
+                  threadId,
+                  text: event.message ?? "Run completed",
+                  done: true,
+                }).catch((err) => ctx.logger.error("Native output handler error", { error: String(err) }));
               }
             }
-            handleAcpOutput(ctx, token, {
-              sessionId: targetSession!.sessionId,
-              chatId,
-              threadId,
-              text: msg,
-              done: false,
-            }).catch((err) => ctx.logger.error("Native output handler error", { error: String(err) }));
-          } else if (event.eventType === "done") {
-            handleAcpOutput(ctx, token, {
-              sessionId: targetSession!.sessionId,
-              chatId,
-              threadId,
-              text: event.message ?? "",
-              done: true,
-            }).catch((err) => ctx.logger.error("Native output handler error", { error: String(err) }));
-          }
-        },
+          };
+        })(),
       });
     } catch (err) {
       ctx.logger.error("Failed to send message to native session", { error: String(err) });
