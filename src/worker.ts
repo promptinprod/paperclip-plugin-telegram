@@ -13,6 +13,8 @@ import {
   answerCallbackQuery,
   setMyCommands,
   escapeMarkdownV2,
+  isForum,
+  GENERAL_TOPIC_THREAD_ID,
 } from "./telegram-api.js";
 import {
   formatIssueCreated,
@@ -229,6 +231,10 @@ const plugin = definePlugin({
         const payload = event.payload as Record<string, unknown>;
         const projectName = payload.projectName ? String(payload.projectName) : undefined;
         messageThreadId = await getTopicForProject(ctx, chatId, projectName);
+      }
+      // For forum groups, fall back to General topic if no specific topic mapping
+      if (!messageThreadId && await isForum(ctx, token, chatId)) {
+        messageThreadId = GENERAL_TOPIC_THREAD_ID;
       }
 
       if (messageThreadId) {
@@ -457,8 +463,13 @@ const plugin = definePlugin({
               for (const i of blocked.slice(0, 10)) lines.push(formatIssueItem(i));
             }
 
+            const digestThreadId = await isForum(ctx, token, chatId)
+              ? GENERAL_TOPIC_THREAD_ID
+              : undefined;
+
             await sendMessage(ctx, token, chatId, lines.join("\n"), {
               parseMode: "MarkdownV2",
+              messageThreadId: digestThreadId,
             });
           } catch (err) {
             ctx.logger.error("Daily digest failed for company", { companyId: company.id, error: String(err) });
@@ -468,8 +479,13 @@ const plugin = definePlugin({
               escapeMarkdownV2("Could not generate digest. Check plugin logs for details."),
             ].join("\n");
 
+            const errorThreadId = await isForum(ctx, token, chatId)
+              ? GENERAL_TOPIC_THREAD_ID
+              : undefined;
+
             await sendMessage(ctx, token, chatId, text, {
               parseMode: "MarkdownV2",
+              messageThreadId: errorThreadId,
             });
           }
         }

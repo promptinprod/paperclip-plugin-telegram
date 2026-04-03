@@ -181,6 +181,38 @@ export async function sendChatAction(
   }
 }
 
+/**
+ * Check if a chat is a forum (has topics enabled).
+ * Caches the result per chatId for the lifetime of the process.
+ */
+const forumCache = new Map<string, boolean>();
+
+export async function isForum(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+): Promise<boolean> {
+  const cached = forumCache.get(chatId);
+  if (cached !== undefined) return cached;
+
+  try {
+    const res = await ctx.http.fetch(`${TELEGRAM_API}/bot${token}/getChat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId }),
+    });
+    const data = (await res.json()) as { ok: boolean; result?: { is_forum?: boolean } };
+    const result = data.ok && data.result?.is_forum === true;
+    forumCache.set(chatId, result);
+    return result;
+  } catch {
+    return false;
+  }
+}
+
+/** General topic thread ID for forum groups. */
+export const GENERAL_TOPIC_THREAD_ID = 1;
+
 // MarkdownV2 requires escaping these characters
 const MD_ESCAPE_CHARS = /([_*\[\]()~`>#+\-=|{}.!\\])/g;
 

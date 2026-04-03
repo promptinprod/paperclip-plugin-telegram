@@ -122,6 +122,32 @@ export async function handleAcpCommand(
   }
 }
 
+// --- Agent name resolution ---
+
+/**
+ * Resolve an agent by name/urlKey (case-insensitive).
+ * The plugin SDK's `agents.get()` requires a UUID, so we list all agents
+ * and match by name or urlKey.
+ */
+async function resolveAgentByName(
+  ctx: PluginContext,
+  name: string,
+  companyId: string,
+): Promise<{ id: string; name: string } | null> {
+  try {
+    const allAgents = await ctx.agents.list({ companyId });
+    const lower = name.toLowerCase();
+    const match = (allAgents as any[]).find(
+      (a: any) =>
+        a.name?.toLowerCase() === lower ||
+        a.urlKey?.toLowerCase() === lower,
+    );
+    return match ? { id: match.id, name: match.name } : null;
+  } catch {
+    return null;
+  }
+}
+
 // --- Spawn (multi-agent aware, native-first) ---
 
 async function handleAcpSpawn(
@@ -171,27 +197,25 @@ async function handleAcpSpawn(
   const displayName = trimmedName.charAt(0).toUpperCase() + trimmedName.slice(1);
   const resolvedCompanyId = companyId ?? await resolveCompanyIdFromChat(ctx, chatId);
 
-  // Try native session first: check if agent exists in Paperclip
+  // Try native session first: resolve agent by name, then create session
   let transport: "native" | "acp" = "acp";
   let sessionId: string;
   let agentId = "";
 
-  try {
-    const agent = await ctx.agents.get(trimmedName, resolvedCompanyId);
-    if (agent) {
-      // Native Paperclip agent - create a session
-      agentId = agent.id;
+  const resolved = await resolveAgentByName(ctx, trimmedName, resolvedCompanyId);
+  if (resolved) {
+    try {
+      agentId = resolved.id;
       const session = await ctx.agents.sessions.create(agentId, resolvedCompanyId, {
         reason: `Telegram thread ${chatId}/${messageThreadId}`,
       });
       sessionId = session.sessionId;
       transport = "native";
       ctx.logger.info("Created native agent session", { agentId, sessionId });
-    } else {
+    } catch {
       sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
-  } catch {
-    // Agent not found in Paperclip - fall back to ACP
+  } else {
     sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
@@ -513,25 +537,54 @@ export async function routeMessageToAgent(
       await ctx.agents.sessions.sendMessage(targetSession.sessionId, resolvedCompanyId, {
         prompt: text,
         reason: "telegram_message",
-        onEvent: (event: AgentSessionEvent) => {
-          if (event.eventType === "chunk" && event.message) {
-            handleAcpOutput(ctx, token, {
-              sessionId: targetSession!.sessionId,
-              chatId,
-              threadId,
-              text: event.message,
-              done: false,
-            }).catch((err) => ctx.logger.error("Native output handler error", { error: String(err) }));
-          } else if (event.eventType === "done") {
-            handleAcpOutput(ctx, token, {
-              sessionId: targetSession!.sessionId,
-              chatId,
-              threadId,
-              text: event.message ?? "",
-              done: true,
-            }).catch((err) => ctx.logger.error("Native output handler error", { error: String(err) }));
-          }
-        },
+        onEvent: (() => {
+          // Buffer assistant text and send only the final response
+          const assistantTextBuffer: string[] = [];
+
+          return (event: AgentSessionEvent) => {
+            if (event.eventType === "chunk" && event.message) {
+              const msg = event.message;
+              if (msg.startsWith("{")) {
+                try {
+                  const parsed = JSON.parse(msg);
+                  // Collect only assistant text content
+                  if (parsed.type === "assistant" && parsed.message?.content) {
+                    const textParts = (parsed.message.content as any[])
+                      .filter((c: any) => c.type === "text" && c.text)
+                      .map((c: any) => c.text);
+                    if (textParts.length > 0) {
+                      assistantTextBuffer.push(textParts.join("\n"));
+                    }
+                  }
+                } catch {
+                  // Not JSON — ignore non-structured output
+                }
+              }
+              // Drop all non-JSON chunks (system messages like "run started", "adapter invocation", etc.)
+            } else if (event.eventType === "done") {
+              const finalText = assistantTextBuffer.length > 0
+                ? assistantTextBuffer.join("\n\n")
+                : "";
+              if (finalText) {
+                handleAcpOutput(ctx, token, {
+                  sessionId: targetSession!.sessionId,
+                  chatId,
+                  threadId,
+                  text: finalText,
+                  done: true,
+                }).catch((err) => ctx.logger.error("Native output handler error", { error: String(err) }));
+              } else {
+                handleAcpOutput(ctx, token, {
+                  sessionId: targetSession!.sessionId,
+                  chatId,
+                  threadId,
+                  text: event.message ?? "Run completed",
+                  done: true,
+                }).catch((err) => ctx.logger.error("Native output handler error", { error: String(err) }));
+              }
+            }
+          };
+        })(),
       });
     } catch (err) {
       ctx.logger.error("Failed to send message to native session", { error: String(err) });
@@ -705,7 +758,28 @@ async function flushOutputQueue(
   }
 }
 
+// --- Markdown to Telegram HTML ---
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function markdownToTelegramHtml(text: string): string {
+  let html = escapeHtml(text);
+  // Bold: **text** → <b>text</b>
+  html = html.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+  // Italic: _text_ (but not in the middle of words)
+  html = html.replace(/(?<!\w)_(.+?)_(?!\w)/g, "<i>$1</i>");
+  // Inline code: `text` → <code>text</code>
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  // Code blocks: ```text``` → <pre>text</pre>
+  html = html.replace(/```(?:\w*\n)?([\s\S]*?)```/g, "<pre>$1</pre>");
+  return html;
+}
+
 // --- Send labeled output ---
+
+const TELEGRAM_MAX_LENGTH = 4000; // Leave room for prefix/label overhead
 
 async function sendLabeledOutput(
   ctx: PluginContext,
@@ -722,18 +796,44 @@ async function sendLabeledOutput(
     : escapeMarkdownV2("\ud83e\udd16");
 
   const label = `*\\[${escapeMarkdownV2(displayName)}\\]*`;
-  const formatted = `${prefix} ${label} ${escapeMarkdownV2(text)}`;
 
-  const messageId = await sendMessage(ctx, token, chatId, formatted, {
-    parseMode: "MarkdownV2",
-    messageThreadId: threadId,
-  });
+  // Split long text into chunks to stay within Telegram's 4096 char limit
+  const chunks: string[] = [];
+  if (text.length <= TELEGRAM_MAX_LENGTH) {
+    chunks.push(text);
+  } else {
+    let remaining = text;
+    while (remaining.length > 0) {
+      if (remaining.length <= TELEGRAM_MAX_LENGTH) {
+        chunks.push(remaining);
+        break;
+      }
+      // Try to split at a newline boundary
+      let splitAt = remaining.lastIndexOf("\n", TELEGRAM_MAX_LENGTH);
+      if (splitAt <= 0) splitAt = TELEGRAM_MAX_LENGTH;
+      chunks.push(remaining.slice(0, splitAt));
+      remaining = remaining.slice(splitAt).replace(/^\n/, "");
+    }
+  }
 
-  if (messageId) {
-    await ctx.state.set(
-      { scopeKind: "instance", stateKey: `agent_msg_${chatId}_${messageId}` },
-      { sessionId },
-    );
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    // Convert agent Markdown to Telegram HTML for proper rendering
+    const doneEmoji = done ? "\u2705" : "\ud83e\udd16";
+    const chunkPrefix = `${doneEmoji} <b>[${escapeHtml(displayName)}]</b> `;
+    const formatted = `${chunkPrefix}${markdownToTelegramHtml(chunks[i]!)}`;
+
+    const messageId = await sendMessage(ctx, token, chatId, formatted, {
+      parseMode: "HTML",
+      messageThreadId: threadId,
+    });
+
+    if (messageId && isLast) {
+      await ctx.state.set(
+        { scopeKind: "instance", stateKey: `agent_msg_${chatId}_${messageId}` },
+        { sessionId },
+      );
+    }
   }
 }
 
@@ -892,19 +992,19 @@ async function executeHandoff(
     let sessionId: string;
     let agentId = "";
 
-    try {
-      const agent = await ctx.agents.get(targetAgent, companyId);
-      if (agent) {
-        agentId = agent.id;
+    const resolved = await resolveAgentByName(ctx, targetAgent, companyId);
+    if (resolved) {
+      try {
+        agentId = resolved.id;
         const session = await ctx.agents.sessions.create(agentId, companyId, {
           reason: `Handoff from Telegram thread ${chatId}/${threadId}`,
         });
         sessionId = session.sessionId;
         transport = "native";
-      } else {
+      } catch {
         sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       }
-    } catch {
+    } else {
       sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
 
@@ -1001,19 +1101,19 @@ export async function handleDiscussToolCall(
     let sessionId: string;
     let agentId = "";
 
-    try {
-      const agent = await ctx.agents.get(targetAgent, companyId);
-      if (agent) {
-        agentId = agent.id;
+    const resolved = await resolveAgentByName(ctx, targetAgent, companyId);
+    if (resolved) {
+      try {
+        agentId = resolved.id;
         const session = await ctx.agents.sessions.create(agentId, companyId, {
           reason: `Discussion from Telegram thread ${chatId}/${threadId}`,
         });
         sessionId = session.sessionId;
         transport = "native";
-      } else {
+      } catch {
         sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       }
-    } catch {
+    } else {
       sessionId = `acp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
 
