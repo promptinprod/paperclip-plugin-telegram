@@ -1,6 +1,6 @@
 {
   "name": "paperclip-plugin-telegram",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "type": "module",
   "main": "./dist/index.js",
   "paperclipPlugin": {
