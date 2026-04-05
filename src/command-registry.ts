@@ -38,6 +38,7 @@ type CreateIssueStep = WorkflowStepBase & {
   title: string;
   description?: string;
   projectId?: string;
+  assigneeAgentId?: string;
 };
 
 type WaitApprovalStep = WorkflowStepBase & {
@@ -406,21 +407,17 @@ async function executeStep(
     case "create_issue": {
       const title = interpolate(step.title);
       const description = step.description ? interpolate(step.description) : undefined;
-      const res = await ctx.http.fetch(
-        `${await resolveBaseUrl(ctx)}/api/issues`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            companyId,
-            title,
-            description,
-            projectId: step.projectId,
-          }),
-        },
-      );
-      const data = (await res.json()) as { id: string };
-      return data.id;
+      const issue = await ctx.issues.create({
+        companyId,
+        title,
+        description,
+        projectId: step.projectId,
+        assigneeAgentId: step.assigneeAgentId,
+      });
+      if (step.assigneeAgentId) {
+        await ctx.issues.update(issue.id, { status: "todo" }, companyId);
+      }
+      return issue.id;
     }
 
     case "wait_approval": {
@@ -474,9 +471,4 @@ async function saveCommandRegistry(ctx: PluginContext, companyId: string, comman
     { scopeKind: "company", scopeId: companyId, stateKey: `commands_${companyId}` },
     commands,
   );
-}
-
-async function resolveBaseUrl(ctx: PluginContext): Promise<string> {
-  const config = await ctx.config.get() as { paperclipBaseUrl?: string };
-  return config.paperclipBaseUrl ?? "http://localhost:3100";
 }
