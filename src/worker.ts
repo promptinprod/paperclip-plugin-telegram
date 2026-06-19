@@ -596,6 +596,25 @@ const plugin = definePlugin({
         }
         if (!shouldSend) return;
 
+        // --- Weekend / Friday-evening suppression (Europe/Paris, DST-aware) ---
+        // No digests on Saturday or Sunday; on Friday, skip only the last (evening) slot.
+        const parisWeekday = new Intl.DateTimeFormat("en-US", {
+          timeZone: "Europe/Paris",
+          weekday: "short",
+        })
+          .formatToParts(new Date())
+          .find((p) => p.type === "weekday")?.value;
+        if (parisWeekday === "Sat" || parisWeekday === "Sun") return;
+        if (parisWeekday === "Fri") {
+          const eveningHour =
+            effectiveDigestMode === "tridaily"
+              ? Math.max(...tridailyHours)
+              : effectiveDigestMode === "bidaily"
+                ? Math.max(firstHour, secondHour)
+                : firstHour;
+          if (nowHour === eveningHour) return;
+        }
+
         const companies = await ctx.companies.list();
         for (const company of companies) {
           const chatId = await resolveChat(ctx, company.id, config.defaultChatId);
